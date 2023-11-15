@@ -3,6 +3,7 @@ import sys
 import argparse
 import cv2
 import numpy
+import pyrealsense2 as rs
 
 
 class LaserTracker(object):
@@ -40,6 +41,11 @@ class LaserTracker(object):
         self.display_thresholds = display_thresholds
 
         self.capture = None  # camera capture device
+        self.pipeline = None
+        self.config = None
+        self.pipeline_wrapper = None
+        self.pipeline_profile = None
+        
         self.channels = {
             'hue': None,
             'saturation': None,
@@ -74,20 +80,27 @@ class LaserTracker(object):
             sys.stderr.write("Invalid Device. Using default device 0\n")
 
         # Try to start capturing frames
-        self.capture = cv2.VideoCapture(device)
-        if not self.capture.isOpened():
-            sys.stderr.write("Faled to Open Capture device. Quitting.\n")
-            sys.exit(1)
+        # self.capture = cv2.VideoCapture(device)
+        self.pipeline = rs.pipeline()
+        self.config = rs.config()
+        self.pipeline_wrapper = rs.pipeline_wrapper(pipeline)
+        self.pipeline_profile = config.resolve(pipeline_wrapper)
+        self.capture = pipeline_profile.get_device()
+        self.config.enable_stream(rs.stream.depth, self.cam_width, self.cam_height, rs.format.bgr8, 30)
+
+        # if not self.capture.isOpened():
+        #     sys.stderr.write("Faled to Open Capture device. Quitting.\n")
+        #     sys.exit(1)
 
         # set the wanted image size from the camera
-        self.capture.set(
-            cv2.cv.CV_CAP_PROP_FRAME_WIDTH if cv2.__version__.startswith('2') else cv2.CAP_PROP_FRAME_WIDTH,
-            self.cam_width
-        )
-        self.capture.set(
-            cv2.cv.CV_CAP_PROP_FRAME_HEIGHT if cv2.__version__.startswith('2') else cv2.CAP_PROP_FRAME_HEIGHT,
-            self.cam_height
-        )
+        # self.capture.set(
+        #     cv2.cv.CV_CAP_PROP_FRAME_WIDTH if cv2.__version__.startswith('2') else cv2.CAP_PROP_FRAME_WIDTH,
+        #     self.cam_width
+        # )
+        # self.capture.set(
+        #     cv2.cv.CV_CAP_PROP_FRAME_HEIGHT if cv2.__version__.startswith('2') else cv2.CAP_PROP_FRAME_HEIGHT,
+        #     self.cam_height
+        # )
         return self.capture
 
     def handle_quit(self, delay=10):
@@ -235,6 +248,8 @@ class LaserTracker(object):
         self.setup_windows()
         # Set up the camera capture
         self.setup_camera_capture()
+
+        self.pipeline.start(self.config)
 
         while True:
             # 1. capture the current image
