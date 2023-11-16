@@ -2,7 +2,7 @@
 import sys
 import argparse
 import cv2
-import numpy
+import numpy as np
 import pyrealsense2 as rs
 
 
@@ -45,6 +45,7 @@ class LaserTracker(object):
         self.config = None
         self.pipeline_wrapper = None
         self.pipeline_profile = None
+        self.depth_scale = None
         
         self.channels = {
             'hue': None,
@@ -54,8 +55,8 @@ class LaserTracker(object):
         }
 
         self.previous_position = None
-        self.trail = numpy.zeros((self.cam_height, self.cam_width, 3),
-                                 numpy.uint8)
+        self.trail = np.zeros((self.cam_height, self.cam_width, 3),
+                                 np.uint8)
 
     def create_and_position_window(self, name, xpos, ypos):
         """Creates a named widow placing it on the screen at (xpos, ypos)."""
@@ -86,7 +87,8 @@ class LaserTracker(object):
         self.pipeline_wrapper = rs.pipeline_wrapper(pipeline)
         self.pipeline_profile = config.resolve(pipeline_wrapper)
         self.capture = pipeline_profile.get_device()
-        self.config.enable_stream(rs.stream.depth, self.cam_width, self.cam_height, rs.format.bgr8, 30)
+        self.config.enable_stream(rs.stream.depth, self.cam_width, self.cam_height, rs.format.z16, 30)
+        self.config.enable_stream(rs.stream.color, self.cam_width, self.cam_height, rs.format.bgr8, 30)
 
         # if not self.capture.isOpened():
         #     sys.stderr.write("Faled to Open Capture device. Quitting.\n")
@@ -108,9 +110,11 @@ class LaserTracker(object):
         key = cv2.waitKey(delay)
         c = chr(key & 255)
         if c in ['c', 'C']:
-            self.trail = numpy.zeros((self.cam_height, self.cam_width, 3),
-                                     numpy.uint8)
+            self.trail = np.zeros((self.cam_height, self.cam_width, 3),
+                                     np.uint8)
         if c in ['q', 'Q', chr(27)]:
+            cv2.destroyAllWindows()
+            self.pipeline.stop()
             sys.exit(0)
 
     def threshold_image(self, channel):
@@ -249,17 +253,29 @@ class LaserTracker(object):
         # Set up the camera capture
         self.setup_camera_capture()
 
-        self.pipeline.start(self.config)
+        profile = self.pipeline.start(self.config)
+        depth_sensor = profile.get_device().first_depth_sensor()
+        self.depth_scale = depth_sensor.get_depth_scale()
 
         while True:
             # 1. capture the current image
-            success, frame = self.capture.read()
-            if not success:  # no image captured... end the processing
-                sys.stderr.write("Could not read camera frame. Quitting\n")
-                sys.exit(1)
+            # success, frame = self.capture.read()
+            frames = self.pipeline.wait_for_frames()
+            depth_frame = frames.get_depth_frame()
+            color_frame = frames.get_color_frame()
+            # if not success:  # no image captured... end the processing
+            #     sys.stderr.write("Could not read camera frame. Quitting\n")
+            #     sys.exit(1)
+            if not depth_frame or not color_frame:
+                continue
 
-            hsv_image = self.detect(frame)
-            self.display(hsv_image, frame)
+            depth_image = np.asanyarray(depth_frame.get_data())
+            color_image = np.asanyarray(color_frame.get_data())
+
+            # hsv_image = self.detect(frame)
+            # self.display(hsv_image, frame)
+            hsv_image = self.detect(color_image)
+            self.display(hsv_image, color_image)
             self.handle_quit()
 
 
