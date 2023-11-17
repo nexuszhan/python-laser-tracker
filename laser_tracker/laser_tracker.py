@@ -92,9 +92,9 @@ class LaserTracker(object):
         # self.capture = cv2.VideoCapture(device)
         self.pipeline = rs.pipeline()
         self.config = rs.config()
-        self.pipeline_wrapper = rs.pipeline_wrapper(pipeline)
-        self.pipeline_profile = config.resolve(pipeline_wrapper)
-        self.capture = pipeline_profile.get_device()
+        self.pipeline_wrapper = rs.pipeline_wrapper(self.pipeline)
+        self.pipeline_profile = self.config.resolve(self.pipeline_wrapper)
+        self.capture = self.pipeline_profile.get_device()
         self.config.enable_stream(rs.stream.depth, self.cam_width, self.cam_height, rs.format.z16, 30)
         self.config.enable_stream(rs.stream.color, self.cam_width, self.cam_height, rs.format.bgr8, 30)
 
@@ -292,25 +292,35 @@ class LaserTracker(object):
         depth_sensor = profile.get_device().first_depth_sensor()
         self.depth_scale = depth_sensor.get_depth_scale()
 
+        align = rs.align(rs.stream.color)
+
         while True:
             # 1. capture the current image
             # success, frame = self.capture.read()
             frames = self.pipeline.wait_for_frames()
+            
+            # aligned_frames = align.process(frames)
             depth_frame = frames.get_depth_frame()
+            # aligned_depth_frame = aligned_frames.get_depth_frame()
             color_frame = frames.get_color_frame()
             # if not success:  # no image captured... end the processing
             #     sys.stderr.write("Could not read camera frame. Quitting\n")
             #     sys.exit(1)
             if not depth_frame or not color_frame:
                 continue
-
+            
+            # colorizer = rs.colorizer()
             depth_image = np.asanyarray(depth_frame.get_data())
             color_image = np.asanyarray(color_frame.get_data())
+            depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
+            images = np.hstack((color_image, depth_colormap))
 
             # hsv_image = self.detect(frame)
             # self.display(hsv_image, frame)
             hsv_image = self.detect(color_image)
-            self.display(hsv_image, color_image)
+            # images = np.hstack((color_image, depth_image))
+            # self.display(hsv_image, color_image)
+            self.display(hsv_image, images)
             self.handle_quit()
 
 class Runner():
@@ -415,5 +425,17 @@ if __name__ == '__main__':
                         help='Display Threshold Windows')
     params = parser.parse_args()
 
-    runner = Runner(params)
-    runner.start()
+    # runner = Runner(params)
+    # runner.start()
+    tracker = LaserTracker(
+            cam_width=params.width,
+            cam_height=params.height,
+            hue_min=params.huemin,
+            hue_max=params.huemax,
+            sat_min=params.satmin,
+            sat_max=params.satmax,
+            val_min=params.valmin,
+            val_max=params.valmax,
+            display_thresholds=params.display
+        )
+    tracker.run()
