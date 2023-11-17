@@ -5,6 +5,13 @@ import cv2
 import numpy as np
 import pyrealsense2 as rs
 
+from enum import Enum
+
+class States(Enum):
+    IDLE = 1
+    SELECTED = 2
+    NAVIGATING = 3
+    ARRIVE = 4
 
 class LaserTracker(object):
 
@@ -57,6 +64,7 @@ class LaserTracker(object):
         self.previous_position = None
         self.trail = np.zeros((self.cam_height, self.cam_width, 3),
                                  np.uint8)
+        self.centers = []
 
     def create_and_position_window(self, name, xpos, ypos):
         """Creates a named widow placing it on the screen at (xpos, ypos)."""
@@ -72,13 +80,13 @@ class LaserTracker(object):
         Returns a reference to the camera Capture object.
 
         """
-        try:
-            device = int(device_num)
-            sys.stdout.write("Using Camera Device: {0}\n".format(device))
-        except (IndexError, ValueError):
-            # assume we want the 1st device
-            device = 0
-            sys.stderr.write("Invalid Device. Using default device 0\n")
+        # try:
+        #     device = int(device_num)
+        #     sys.stdout.write("Using Camera Device: {0}\n".format(device))
+        # except (IndexError, ValueError):
+        #     # assume we want the 1st device
+        #     device = 0
+        #     sys.stderr.write("Invalid Device. Using default device 0\n")
 
         # Try to start capturing frames
         # self.capture = cv2.VideoCapture(device)
@@ -104,6 +112,10 @@ class LaserTracker(object):
         #     self.cam_height
         # )
         return self.capture
+    
+    def clear_trail(self):
+        self.trail = np.zeros((self.cam_height, self.cam_width, 3), np.uint8)
+        self.centers.clear()
 
     def handle_quit(self, delay=10):
         """Quit the program if the user presses "Esc" or "q"."""
@@ -186,6 +198,7 @@ class LaserTracker(object):
 
         cv2.add(self.trail, frame, frame)
         self.previous_position = center
+        self.centers.append(center)
 
     def detect(self, frame):
         hsv_img = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -247,6 +260,28 @@ class LaserTracker(object):
             self.create_and_position_window('Saturation', 30, 30)
             self.create_and_position_window('Value', 40, 40)
 
+    def get_distance(frames):
+        """compute distance to a laser point"""
+        align = rs.align(rs.stream.color)
+        frames = align.process(frames)
+
+        aligned_depth_frame = frames.get_depth_frame()
+
+        depth = np.asanyarray(aligned_depth_frame.get_data())
+        # depth = depth[xmin_depth:xmax_depth,ymin_depth:ymax_depth].astype(float)
+        # depth = depth * depth_scale
+        # dist,_,_,_ = cv2.mean(depth)
+    
+    def setup(self):
+        # Set up window positions
+        self.setup_windows()
+        # Set up the camera capture
+        self.setup_camera_capture()
+
+        profile = self.pipeline.start(self.config)
+        depth_sensor = profile.get_device().first_depth_sensor()
+        self.depth_scale = depth_sensor.get_depth_scale()
+
     def run(self):
         # Set up window positions
         self.setup_windows()
@@ -278,6 +313,68 @@ class LaserTracker(object):
             self.display(hsv_image, color_image)
             self.handle_quit()
 
+class Runner():
+    def __init__(self, params):
+        self.tracker = LaserTracker(
+            cam_width=params.width,
+            cam_height=params.height,
+            hue_min=params.huemin,
+            hue_max=params.huemax,
+            sat_min=params.satmin,
+            sat_max=params.satmax,
+            val_min=params.valmin,
+            val_max=params.valmax,
+            display_thresholds=params.display
+        )
+        self.state = States.IDLE
+        self.target_pos = None
+
+    def handle_idle(self):
+        while self.state == States.IDLE:
+            frames = self.tracker.pipeline.wait_for_frames()
+            # depth_frame = frames.get_depth_frame()
+            color_frame = frames.get_color_frame()
+            if not color_frame:
+                continue
+
+            # depth_image = np.asanyarray(depth_frame.get_data())
+            color_image = np.asanyarray(color_frame.get_data())
+
+            hsv_image = self.tracker.detect(color_image)
+            self.tracker.display(hsv_image, color_image)
+            # if ... :
+                # self.state = States.SELECTED
+
+            self.tracker.handle_quit()
+
+    def handle_selected(self):
+        while self.state == States.SELECTED:
+            frames = self.tracker.pipeline.wait_for_frames()
+            depth_frame = frames.get_depth_frame()
+            color_frame = frames.get_color_frame()
+
+            if not depth_frame or not color_frame:
+                continue
+
+            depth_image = np.asanyarray(depth_frame.get_data())
+            color_image = np.asanyarray(color_frame.get_data())
+
+            hsv_image = self.tracker.detect(color_image)
+            self.tracker.display(hsv_image, color_image)
+            self.tracker.handle_quit()
+
+    def start(self):
+        self.tracker.setup()
+        while True:
+            self.tracker.clear_trail()
+            if self.state == States.IDLE:
+                self.handle_idle()
+            elif self.state == States.SELECTED:
+                self.handle_selected()
+            elif self.state == States.NAVIGATING:
+                pass
+            elif self.state == States.ARRIVE:
+                pass
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run the Laser Tracker')
@@ -318,15 +415,5 @@ if __name__ == '__main__':
                         help='Display Threshold Windows')
     params = parser.parse_args()
 
-    tracker = LaserTracker(
-        cam_width=params.width,
-        cam_height=params.height,
-        hue_min=params.huemin,
-        hue_max=params.huemax,
-        sat_min=params.satmin,
-        sat_max=params.satmax,
-        val_min=params.valmin,
-        val_max=params.valmax,
-        display_thresholds=params.display
-    )
-    tracker.run()
+    runner = Runner(params)
+    runner.start()
