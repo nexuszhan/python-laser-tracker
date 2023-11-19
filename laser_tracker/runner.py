@@ -19,6 +19,9 @@ class LaserTracker():
         self.xpos = xpos
         self.ypos = ypos
 
+        self.tracker_height = 0.125
+        self.horizontal_range = 69 * np.pi / 180
+
         self.hue_min = hsv_thres["hue_min"]
         self.hue_max = hsv_thres["hue_max"]
         self.sat_min = hsv_thres["sat_min"]
@@ -45,20 +48,20 @@ class LaserTracker():
         """Display the combined image and (optionally) all other image channels
         NOTE: default color space in OpenCV is BGR.
         """
-        cv2.imshow('RGB_VideoFrame', frame)
-        cv2.imshow('LaserPointer', thres)
+        cv2.imshow("RGB_VideoFrame "+self.color, frame)
+        cv2.imshow("LaserPointer "+self.color, thres)
 
     def setup_windows(self):
         sys.stdout.write("Using OpenCV version: {0}\n".format(cv2.__version__))
 
         # create output windows
-        self.create_and_position_window('LaserPointer', self.xpos, self.ypos)
-        self.create_and_position_window('RGB_VideoFrame',
+        self.create_and_position_window("LaserPointer "+self.color, self.xpos, self.ypos)
+        self.create_and_position_window("RGB_VideoFrame "+self.color,
                                         self.xpos + 10 + self.cam_width, self.ypos)
 
     def clear_trail(self):
         self.trail = np.zeros((self.cam_height, self.cam_width, 3), np.uint8)
-        self.centers.clear()
+        self.centers = []
         self.previous_position = None
 
     def track(self, frame, mask):
@@ -100,7 +103,8 @@ class LaserTracker():
 
         cv2.add(self.trail, frame, frame)
         self.previous_position = center
-        self.centers.append(list(center))
+        if center:
+            self.centers.append([center[1], center[0]])
 
     # def threshold_image(self, channel):
     #     if channel == "hue":
@@ -134,15 +138,18 @@ class LaserTracker():
 
     def detect(self, frame):
         hsv_img = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        print("HSV shape: ", hsv_img.shape)
         
         # Threshold ranges of HSV components
-        hsv_thres = cv2.inRange(hsv_img, np.array(self.hue_min, self.sat_min, self.val_min), 
-                                    np.array(self.hue_max, self.sat_max, self.val_max))
+        hsv_thres = cv2.inRange(hsv_img, (self.hue_min, self.sat_min, self.val_min), 
+                                    (self.hue_max, self.sat_max, self.val_max))
         if self.color == "red":
-            tmp = cv2.inRange(hsv_img, np.array(170, self.sat_min, self.val_min),
-                              np.array(180, self.sat_max, self.val_max))
+            tmp = cv2.inRange(hsv_img, (170, self.sat_min, self.val_min),
+                              (180, self.sat_max, self.val_max))
             hsv_thres = cv2.bitwise_or(hsv_thres, tmp)
-
+        
+        print("Mask shape: ", hsv_thres.shape)
         self.track(frame, hsv_thres)
 
         return hsv_thres
@@ -154,7 +161,7 @@ class LaserTracker():
         centers = np.array(self.centers)
         left = np.mean(centers[:int(len(centers)/5), 0])
         right = np.mean(centers[int(0.8*len(centers)):, 0])
-        if (right-left) >= 100:
+        if (right - left) >= 100:
             return True
         return False
 
@@ -164,9 +171,16 @@ class LaserTracker():
             return None
         depth = depth_frame[self.centers[-1][0], self.centers[-1][1]].astype(float)
         dist = depth * depth_scale
+        print(dist)
 
-        pos = None
-        return pos
+        tmp = np.sqrt(dist**2 - self.tracker_height**2)
+        theta = (self.cam_width - self.centers[-1][0]) * self.horizontal_range / self.cam_width
+        # angle = scale * self.horizontal_range
+        
+        x = tmp * np.sin(theta)
+        y = tmp * np.cos(theta)
+
+        return [x, y]
 
 class Runner():
     def __init__(self, display=False):
@@ -184,23 +198,29 @@ class Runner():
                                           self.cam_height, 0, self.cam_height+10)
 
         self.pipeline = None
+        self.config = None
+        self.device = None
+        self.align = None
+        self.depth_scale = None
 
-        self.state = States.IDLE
+        self.state = States.SELECTED #States.IDLE
         self.target_pos = None
 
     def run_camera(self):
         self.pipeline = rs.pipeline()
         self.config = rs.config()
-        self.pipeline_wrapper = rs.pipeline_wrapper(self.pipeline)
-        self.pipeline_profile = self.config.resolve(self.pipeline_wrapper)
-        self.capture = self.pipeline_profile.get_device()
+        pipeline_wrapper = rs.pipeline_wrapper(self.pipeline)
+        pipeline_profile = self.config.resolve(pipeline_wrapper)
+        self.device = pipeline_profile.get_device()
         self.config.enable_stream(rs.stream.depth, self.cam_width, self.cam_height, rs.format.z16, 30)
         self.config.enable_stream(rs.stream.color, self.cam_width, self.cam_height, rs.format.bgr8, 30)
-
+        # print(1)
         profile = self.pipeline.start(self.config)
         depth_sensor = profile.get_device().first_depth_sensor()
         self.depth_scale = depth_sensor.get_depth_scale()
         self.align = rs.align(rs.stream.color)
+
+        print("Camera setup succeed.")
         
     def handle_quit(self, delay=10):
         """Quit the program if the user presses "Esc" or "q"."""
@@ -245,35 +265,42 @@ class Runner():
             frames = self.pipeline.wait_for_frames()
             aligned_frames = self.align.process(frames)
             depth_frame = aligned_frames.get_depth_frame()
-            color_frame = aligned_frames.get_color_frame()
+            color_frame = frames.get_color_frame()
 
             if not depth_frame or not color_frame:
                 continue
 
             depth_image = np.asanyarray(depth_frame.get_data())
+            print("Depth image shape: ", depth_image.shape)
             color_image = np.asanyarray(color_frame.get_data())
+            print("Color image shape: ", color_image.shape)
             depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
             images = np.hstack((color_image, depth_colormap))
 
-            red_bin = self.red_tracker.detect(color_image, "red")
-            green_bin = self.green_tracker.detect(color_image, "green")
-
-            red_pos = self.red_tracker.get_target_pos()
-            if red_pos:
-                self.state = States.NAVIGATING
+            # red_bin = self.red_tracker.detect(color_image)
+            green_bin = self.green_tracker.detect(color_image)
+            print(self.green_tracker.centers)
+            # red_pos = self.red_tracker.get_target_pos(depth_image, self.depth_scale)
+            # print(red_pos)
+            # if red_pos:
+                # self.state = States.NAVIGATING
                 # TODO: control ...
 
-            # self.green_tracker.get_target_pos()
+            green_pos = self.green_tracker.get_target_pos(depth_image, self.depth_scale)
+            print(green_pos)
             if self.display:
-                self.red_tracker.display(red_bin, images)
+                # self.red_tracker.display(red_bin, images)
                 self.green_tracker.display(green_bin, images)
             self.handle_quit()
 
     def start(self):
+        if self.display:
+            print("Display enabled")
+        if self.display:
+            # self.red_tracker.setup_windows()
+            self.green_tracker.setup_windows()
         self.run_camera()
         while True:
-            self.red_tracker.clear_trail()
-            self.green_tracker.clear_trail()
             if self.state == States.IDLE:
                 print("idel")
                 self.handle_idle()
@@ -285,6 +312,8 @@ class Runner():
                 pass
             elif self.state == States.ARRIVE:
                 pass
+            self.red_tracker.clear_trail()
+            self.green_tracker.clear_trail()
 
 if __name__ == '__main__':
     """run with python3 runner.py -d to show video"""
