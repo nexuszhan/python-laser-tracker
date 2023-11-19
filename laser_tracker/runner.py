@@ -100,7 +100,37 @@ class LaserTracker():
 
         cv2.add(self.trail, frame, frame)
         self.previous_position = center
-        self.centers.append(center)
+        self.centers.append(list(center))
+
+    # def threshold_image(self, channel):
+    #     if channel == "hue":
+    #         minimum = self.hue_min
+    #         maximum = self.hue_max
+    #     elif channel == "saturation":
+    #         minimum = self.sat_min
+    #         maximum = self.sat_max
+    #     elif channel == "value":
+    #         minimum = self.val_min
+    #         maximum = self.val_max
+
+    #     (t, tmp) = cv2.threshold(
+    #         self.channels[channel],  # src
+    #         maximum,  # threshold value
+    #         0,  # we dont care because of the selected type
+    #         cv2.THRESH_TOZERO_INV  # t type
+    #     )
+
+    #     (t, self.channels[channel]) = cv2.threshold(
+    #         tmp,  # src
+    #         minimum,  # threshold value
+    #         255,  # maxvalue
+    #         cv2.THRESH_BINARY  # type
+    #     )
+
+    #     if channel == 'hue':
+    #         # only works for filtering red color because the range for the hue
+    #         # is split
+    #         self.channels['hue'] = cv2.bitwise_not(self.channels['hue'])
 
     def detect(self, frame):
         hsv_img = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -119,15 +149,27 @@ class LaserTracker():
     
     def check_activate(self):
         """Check whether there is a clockwise circle"""
-        return True
+        if (len(self.centers) < 10):
+            return False
+        centers = np.array(self.centers)
+        left = np.mean(centers[:int(len(centers)/5), 0])
+        right = np.mean(centers[int(0.8*len(centers)):, 0])
+        if (right-left) >= 100:
+            return True
+        return False
 
-    def get_target_pos(self):
+    def get_target_pos(self, depth_frame, depth_scale):
         """Identify the target position when selected"""
+        if len(self.centers) == 0:
+            return None
+        depth = depth_frame[self.centers[-1][0], self.centers[-1][1]].astype(float)
+        dist = depth * depth_scale
+
         pos = None
-        pass
+        return pos
 
 class Runner():
-    def __init__(self, display=1):
+    def __init__(self, display=False):
         self.display = display
         self.cam_width = 640
         self.cam_height = 480
@@ -215,7 +257,12 @@ class Runner():
 
             red_bin = self.red_tracker.detect(color_image, "red")
             green_bin = self.green_tracker.detect(color_image, "green")
-            # self.red_tracker.get_target_pos()
+
+            red_pos = self.red_tracker.get_target_pos()
+            if red_pos:
+                self.state = States.NAVIGATING
+                # TODO: control ...
+
             # self.green_tracker.get_target_pos()
             if self.display:
                 self.red_tracker.display(red_bin, images)
@@ -228,21 +275,25 @@ class Runner():
             self.red_tracker.clear_trail()
             self.green_tracker.clear_trail()
             if self.state == States.IDLE:
+                print("idel")
                 self.handle_idle()
             elif self.state == States.SELECTED:
+                print("selected")
                 self.handle_selected()
             elif self.state == States.NAVIGATING:
+                print("navigating")
                 pass
             elif self.state == States.ARRIVE:
                 pass
 
 if __name__ == '__main__':
+    """run with python3 runner.py -d to show video"""
     parser = argparse.ArgumentParser(description='Run the Laser Tracker')
     parser.add_argument('-d', '--display',
-                        default=1,
-                        type=int,
+                        action='store_true',
                         help='Display the video or not')
     params = parser.parse_args()
+
     runner = Runner(params.display)
     runner.start()
     
