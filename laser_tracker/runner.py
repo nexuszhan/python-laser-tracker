@@ -82,6 +82,7 @@ class LaserTracker():
             # it to compute the minimum enclosing circle and
             # centroid
             c = max(countours, key=cv2.contourArea)
+            # c = min(countours, key=cv2.contourArea)
             ((x, y), radius) = cv2.minEnclosingCircle(c)
             moments = cv2.moments(c)
             if moments["m00"] > 0:
@@ -91,7 +92,8 @@ class LaserTracker():
                 center = int(x), int(y)
 
             # only proceed if the radius meets a minimum size
-            if radius > 10:
+            # if radius > 10:
+            if radius > 5:
                 # draw the circle and centroid on the frame,
                 cv2.circle(frame, (int(x), int(y)), int(radius),
                            (0, 255, 255), 2)
@@ -104,7 +106,7 @@ class LaserTracker():
         cv2.add(self.trail, frame, frame)
         self.previous_position = center
         if center:
-            self.centers.append([center[1], center[0]])
+            self.centers.append([center[0], center[1]])
 
     # def threshold_image(self, channel):
     #     if channel == "hue":
@@ -137,31 +139,55 @@ class LaserTracker():
     #         self.channels['hue'] = cv2.bitwise_not(self.channels['hue'])
 
     def detect(self, frame):
-        hsv_img = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        # gray_img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # hsv_img = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        hls_img = cv2.cvtColor(frame, cv2.COLOR_BGR2HLS)
 
-        print("HSV shape: ", hsv_img.shape)
+        # print("HSV shape: ", hsv_img.shape)
+        # Threshold light areas
+        # gray_mask = cv2.adaptiveThreshold(gray_img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C
+        #                                      , cv2.THRESH_BINARY, 5, 2)
+        # gray_mask = cv2.threshold(gray_img, 200, 255, cv2.THRESH_BINARY)
         
         # Threshold ranges of HSV components
-        hsv_thres = cv2.inRange(hsv_img, (self.hue_min, self.sat_min, self.val_min), 
-                                    (self.hue_max, self.sat_max, self.val_max))
+        # hsv_thres = cv2.inRange(hsv_img, (self.hue_min, self.sat_min, self.val_min), 
+        #                             (self.hue_max, self.sat_max, self.val_max))
+        # if self.color == "red":
+        #     tmp = cv2.inRange(hsv_img, (170, self.sat_min, self.val_min),
+        #                       (180, self.sat_max, self.val_max))
+        #     hsv_thres = cv2.bitwise_or(hsv_thres, tmp)
+        hls_thres = cv2.inRange(hls_img, (0, 250, 0), 
+                                    (255, 255, 255))
         if self.color == "red":
-            tmp = cv2.inRange(hsv_img, (170, self.sat_min, self.val_min),
-                              (180, self.sat_max, self.val_max))
-            hsv_thres = cv2.bitwise_or(hsv_thres, tmp)
+            tmp = cv2.inRange(hls_img, (170, 200, self.sat_min),
+                              (180, 255, self.sat_max))
+            hls_thres = cv2.bitwise_or(hls_thres, tmp)
         
-        print("Mask shape: ", hsv_thres.shape)
-        self.track(frame, hsv_thres)
+        # thres = cv2.bitwise_and(gray_mask, hsv_thres)
+        self.track(frame, hls_thres)
+        # if self.previous_position:
+            # print(hls_img[self.previous_position[1], self.previous_position[0]])
 
-        return hsv_thres
+        # return hsv_thres
+        return hls_thres
     
     def check_activate(self):
         """Check whether there is a clockwise circle"""
-        if (len(self.centers) < 10):
+        # if (len(self.centers) < 10):
+        #     return False
+        # centers = np.array(self.centers)
+        # left = np.mean(centers[:int(len(centers)/5), 0])
+        # right = np.mean(centers[int(0.8*len(centers)):, 0])
+        # if right > 480 and left < 160:
+        #     return True
+        # return False
+        if (len(self.centers) < 2):
             return False
-        centers = np.array(self.centers)
-        left = np.mean(centers[:int(len(centers)/5), 0])
-        right = np.mean(centers[int(0.8*len(centers)):, 0])
-        if (right - left) >= 100:
+        # print(self.centers)
+        # print(self.centers[-1])
+        left = self.centers[0][0]
+        right = self.centers[-1][0]
+        if right > 480 and left < 160:
             return True
         return False
 
@@ -169,12 +195,12 @@ class LaserTracker():
         """Identify the target position when selected"""
         if len(self.centers) == 0:
             return None
-        depth = depth_frame[self.centers[-1][0], self.centers[-1][1]].astype(float)
+        depth = depth_frame[self.centers[0][1], self.centers[0][0]].astype(float)
         dist = depth * depth_scale
         print(dist)
 
         tmp = np.sqrt(dist**2 - self.tracker_height**2)
-        theta = (self.cam_width - self.centers[-1][0]) * self.horizontal_range / self.cam_width
+        theta = (self.cam_width - self.centers[0][0]) * self.horizontal_range / self.cam_width
         # angle = scale * self.horizontal_range
         
         x = tmp * np.sin(theta)
@@ -191,7 +217,7 @@ class Runner():
             "red":{"hue_min":0, "hue_max":10, "sat_min":100, 
                    "sat_max":255, "val_min":200, "val_max":256}, 
             "green":{"hue_min":50, "hue_max":70, "sat_min":100, 
-                   "sat_max":255, "val_min":200, "val_max":256}}
+                   "sat_max":255, "val_min":200, "val_max":256}} # 100, 255
         self.red_tracker = LaserTracker(self.hsv_thres["red"], "red", self.cam_width, 
                                         self.cam_height)
         self.green_tracker = LaserTracker(self.hsv_thres["green"], "green", self.cam_width,
@@ -249,13 +275,14 @@ class Runner():
             # depth_image = np.asanyarray(depth_frame.get_data())
             color_image = np.asanyarray(color_frame.get_data())
 
-            red_bin = self.red_tracker.detect(color_image, "red")
-            green_bin = self.green_tracker.detect(color_image, "green")
+            # red_bin = self.red_tracker.detect(color_image)
+            green_bin = self.green_tracker.detect(color_image)
             if self.display:
-                self.red_tracker.display(red_bin, color_image)
+                # self.red_tracker.display(red_bin, color_image)
                 self.green_tracker.display(green_bin, color_image)
 
-            if self.red_tracker.check_activate():
+            # if self.red_tracker.check_activate():
+            if self.green_tracker.check_activate():
                 self.state = States.SELECTED
 
             self.handle_quit()
@@ -271,15 +298,15 @@ class Runner():
                 continue
 
             depth_image = np.asanyarray(depth_frame.get_data())
-            print("Depth image shape: ", depth_image.shape)
+            # print("Depth image shape: ", depth_image.shape)
             color_image = np.asanyarray(color_frame.get_data())
-            print("Color image shape: ", color_image.shape)
+            # print("Color image shape: ", color_image.shape)
             depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
             images = np.hstack((color_image, depth_colormap))
 
             # red_bin = self.red_tracker.detect(color_image)
             green_bin = self.green_tracker.detect(color_image)
-            print(self.green_tracker.centers)
+            # print(self.green_tracker.centers)
             # red_pos = self.red_tracker.get_target_pos(depth_image, self.depth_scale)
             # print(red_pos)
             # if red_pos:
@@ -288,6 +315,8 @@ class Runner():
 
             green_pos = self.green_tracker.get_target_pos(depth_image, self.depth_scale)
             print(green_pos)
+            if (green_pos):
+                self.state = States.IDLE
             if self.display:
                 # self.red_tracker.display(red_bin, images)
                 self.green_tracker.display(green_bin, images)
