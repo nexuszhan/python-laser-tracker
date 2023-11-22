@@ -198,13 +198,13 @@ class LaserTracker():
         # if right > 480 and left < 160:
         #     return True
         # return False
-        if (len(self.centers) < 5):
+        if (len(self.centers) < 6):
             return False
         # print(self.centers)
         # print(self.centers[-1])
         left = self.centers[0][0]
         right = self.centers[-1][0]
-        if right > 480 and left < 160:
+        if right > 560 and left < 80:
             return True
         return False
 
@@ -253,6 +253,8 @@ class Runner():
 
         self.state = States.IDLE #States.IDLE
         self.target_pos = None
+        self.current_pos = None
+        self.task = None
 
     def run_camera(self):
         self.pipeline = rs.pipeline()
@@ -302,12 +304,11 @@ class Runner():
             if self.display:
                 # self.red_tracker.display(red_bin, color_image)
                 self.green_tracker.display(green_bin, color_image)
+                self.handle_quit()
 
             # if self.red_tracker.check_activate():
             if self.green_tracker.check_activate():
                 self.state = States.SELECTED
-
-            self.handle_quit()
 
     def handle_selected(self):
         while self.state == States.SELECTED:
@@ -339,12 +340,57 @@ class Runner():
             if self.display:
                 # self.red_tracker.display(red_bin, images)
                 self.green_tracker.display(green_bin, images)
+                self.handle_quit()
 
             if (green_pos):
-                self.state = States.IDLE
+                self.state = States.NAVIGATING
                 self.target_pos = green_pos
 
-            self.handle_quit()
+    def handle_navigate(self):
+        while self.state == States.NAVIGATING:
+            if (self.current_pos == self.target_pos):
+                self.state = States.ARRIVE
+                break
+            # TODO: control the bot to move
+            # ......
+            frames = self.pipeline.wait_for_frames()
+            aligned_frames = self.align.process(frames)
+            depth_frame = aligned_frames.get_depth_frame()
+            color_frame = frames.get_color_frame()
+
+            if not depth_frame or not color_frame:
+                continue
+
+            depth_image = np.asanyarray(depth_frame.get_data())
+            color_image = np.asanyarray(color_frame.get_data())
+            depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
+            images = np.hstack((color_image, depth_colormap))
+
+            # red_bin = self.red_tracker.detect(color_image)
+            green_bin = self.green_tracker.detect(color_image)
+            # print(self.green_tracker.centers)
+            # red_pos = self.red_tracker.get_target_pos(depth_image, self.depth_scale)
+            # print(red_pos)
+            # if red_pos:
+                # self.state = States.NAVIGATING
+                # TODO: control ...
+            
+            depth_intrin = depth_frame.profile.as_video_stream_profile().intrinsics
+            green_pos = self.green_tracker.get_target_pos(depth_image, self.depth_scale, depth_intrin)
+            print(green_pos)
+            if self.display:
+                # self.red_tracker.display(red_bin, images)
+                self.green_tracker.display(green_bin, images)
+                self.handle_quit()
+
+            if (green_pos):
+                self.target_pos = green_pos
+
+    def handle_arrive(self):
+        if not self.task:
+            self.state = States.IDLE
+            return
+        # TODO: control the bot to do something
 
     def start(self):
         if self.display:
@@ -353,6 +399,8 @@ class Runner():
             # self.red_tracker.setup_windows()
             self.green_tracker.setup_windows()
         self.run_camera()
+        # TODO: initialize current_pos
+        # self.current_pos = 
         while True:
             if self.state == States.IDLE:
                 print("idel")
@@ -362,15 +410,22 @@ class Runner():
                 self.handle_selected()
             elif self.state == States.NAVIGATING:
                 print("navigating")
-                pass
+                self.handle_navigate()
             elif self.state == States.ARRIVE:
-                pass
+                print("arrived    may perform some tasks...")
+                self.handle_arrive()
+
             self.red_tracker.clear_trail()
             self.green_tracker.clear_trail()
-            time.sleep(1.5)
+            print("changing state")
+            time.sleep(2)
+
+        scv2.destroyAllWindows()
+        self.pipeline.stop()
+        sys.exit(0)
 
 if __name__ == '__main__':
-    """run with python3 runner.py -d to show video"""
+    """run with 'python3 runner.py -d' to show video"""
     parser = argparse.ArgumentParser(description='Run the Laser Tracker')
     parser.add_argument('-d', '--display',
                         action='store_true',
