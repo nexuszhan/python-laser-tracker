@@ -33,7 +33,7 @@ class LaserTracker():
         self.previous_position = None
         self.trail = np.zeros((self.cam_height, self.cam_width, 3),
                                  np.uint8)
-        self.centers = []
+        self.centers = [] # center[0]: width  center[1]: height
     
     def create_and_position_window(self, name, xpos, ypos):
         """Creates a named widow placing it on the screen at (xpos, ypos)."""
@@ -191,7 +191,7 @@ class LaserTracker():
             return True
         return False
 
-    def get_target_pos(self, depth_frame, depth_scale):
+    def get_target_pos(self, depth_frame, depth_scale, depth_intrin):
         """Identify the target position when selected"""
         if len(self.centers) == 0:
             return None
@@ -199,14 +199,18 @@ class LaserTracker():
         dist = depth * depth_scale
         print(dist)
 
-        tmp = np.sqrt(dist**2 - self.tracker_height**2)
-        theta = (self.cam_width - self.centers[0][0]) * self.horizontal_range / self.cam_width
+        camera_cord = rs.rs2_deproject_pixel_to_point(depth_intrin, [self.centers[0][0], self.centers[0][1]], dist)
+        target_x = camera_cord[2]
+        target_y = -camera_cord[0] # define left as positive
+
+        # tmp = np.sqrt(dist**2 - self.tracker_height**2)
+        # theta = (self.cam_width - self.centers[0][0]) * self.horizontal_range / self.cam_width
         # angle = scale * self.horizontal_range
         
-        x = tmp * np.sin(theta)
-        y = tmp * np.cos(theta)
+        # x = tmp * np.sin(theta)
+        # y = tmp * np.cos(theta)
 
-        return [x, y]
+        return [target_x, target_y]
 
 class Runner():
     def __init__(self, display=False):
@@ -228,6 +232,7 @@ class Runner():
         self.device = None
         self.align = None
         self.depth_scale = None
+        # self.depth_intrin = None
 
         self.state = States.SELECTED #States.IDLE
         self.target_pos = None
@@ -312,15 +317,17 @@ class Runner():
             # if red_pos:
                 # self.state = States.NAVIGATING
                 # TODO: control ...
-
-            green_pos = self.green_tracker.get_target_pos(depth_image, self.depth_scale)
+            
+            depth_intrin = depth_frame.profile.as_video_stream_profile().intrinsics
+            green_pos = self.green_tracker.get_target_pos(depth_image, self.depth_scale, depth_intrin)
             print(green_pos)
-            if (green_pos):
-                self.state = States.IDLE
             if self.display:
                 # self.red_tracker.display(red_bin, images)
                 self.green_tracker.display(green_bin, images)
             self.handle_quit()
+
+            if (green_pos):
+                self.state = States.IDLE
 
     def start(self):
         if self.display:
