@@ -200,8 +200,7 @@ class LaserTracker():
         # return False
         if (len(self.centers) < 6):
             return False
-        # print(self.centers)
-        # print(self.centers[-1])
+
         left = self.centers[0][0]
         right = self.centers[-1][0]
         if right > 560 and left < 80:
@@ -219,13 +218,6 @@ class LaserTracker():
         camera_cord = rs.rs2_deproject_pixel_to_point(depth_intrin, [self.centers[0][0], self.centers[0][1]], dist)
         target_x = camera_cord[2]
         target_y = -camera_cord[0] # define left as positive
-
-        # tmp = np.sqrt(dist**2 - self.tracker_height**2)
-        # theta = (self.cam_width - self.centers[0][0]) * self.horizontal_range / self.cam_width
-        # angle = scale * self.horizontal_range
-        
-        # x = tmp * np.sin(theta)
-        # y = tmp * np.cos(theta)
 
         return [target_x, target_y]
 
@@ -291,12 +283,10 @@ class Runner():
     def handle_idle(self):
         while self.state == States.IDLE:
             frames = self.pipeline.wait_for_frames()
-            # depth_frame = frames.get_depth_frame()
             color_frame = frames.get_color_frame()
             if not color_frame:
                 continue
 
-            # depth_image = np.asanyarray(depth_frame.get_data())
             color_image = np.asanyarray(color_frame.get_data())
 
             # red_bin = self.red_tracker.detect(color_image)
@@ -346,9 +336,13 @@ class Runner():
                 self.state = States.NAVIGATING
                 self.target_pos = green_pos
 
+    def check_arrive(self):
+        return abs(self.current_pos[0]-self.target_pos[0]) < 0.1 and \
+                abs(self.current_pos[1]-self.target_pos[1]) < 0.1
+
     def handle_navigate(self):
         while self.state == States.NAVIGATING:
-            if (self.current_pos == self.target_pos):
+            if self.check_arrive():
                 self.state = States.ARRIVE
                 break
             # TODO: control the bot to move
@@ -418,7 +412,7 @@ class Runner():
             self.red_tracker.clear_trail()
             self.green_tracker.clear_trail()
             print("changing state")
-            time.sleep(2)
+            time.sleep(1.5)
 
         scv2.destroyAllWindows()
         self.pipeline.stop()
