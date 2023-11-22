@@ -125,22 +125,23 @@ class LaserTracker():
         
         # Set Convexity filtering parameters 
         params.filterByConvexity = True
-        params.minConvexity = 0.2
+        params.minConvexity = 0.35
 
         # Set inertia filtering parameters 
         params.filterByInertia = True
-        params.minInertiaRatio = 0.01
+        params.minInertiaRatio = 0.5
 
         # Filter by Area
         params.filterByArea = False
-        # params.maxArea = 35
+        params.maxArea = 200
 
         detector.setParams(params)
         
         # Detect blobs 
         keypoints = detector.detect(mask)
         
-        if len(keypoints):
+        print(len(keypoints))
+        if len(keypoints) and len(keypoints) <= 2:
             # print(keypoints)
             print(len(keypoints))
             x, y = keypoints[0].pt  
@@ -203,7 +204,7 @@ class LaserTracker():
 
         left = self.centers[0][0]
         right = self.centers[-1][0]
-        if right > 560 and left < 80:
+        if right > 500 and left < 140:
             return True
         return False
 
@@ -394,7 +395,7 @@ class Runner():
             self.green_tracker.setup_windows()
         self.run_camera()
         # TODO: initialize current_pos
-        # self.current_pos = 
+        self.current_pos = [0, 0]
         while True:
             if self.state == States.IDLE:
                 print("idel")
@@ -412,7 +413,7 @@ class Runner():
             self.red_tracker.clear_trail()
             self.green_tracker.clear_trail()
             print("changing state")
-            time.sleep(1.5)
+            time.sleep(1)
 
         scv2.destroyAllWindows()
         self.pipeline.stop()
