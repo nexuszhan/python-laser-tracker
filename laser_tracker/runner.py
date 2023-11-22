@@ -3,6 +3,7 @@ import argparse
 import cv2
 import numpy as np
 import pyrealsense2 as rs
+import time
 
 from enum import Enum
 
@@ -93,7 +94,7 @@ class LaserTracker():
 
             # only proceed if the radius meets a minimum size
             # if radius > 10:
-            if radius > 5:
+            if radius > 10:
                 # draw the circle and centroid on the frame,
                 cv2.circle(frame, (int(x), int(y)), int(radius),
                            (0, 255, 255), 2)
@@ -108,46 +109,61 @@ class LaserTracker():
         if center:
             self.centers.append([center[0], center[1]])
 
-    # def threshold_image(self, channel):
-    #     if channel == "hue":
-    #         minimum = self.hue_min
-    #         maximum = self.hue_max
-    #     elif channel == "saturation":
-    #         minimum = self.sat_min
-    #         maximum = self.sat_max
-    #     elif channel == "value":
-    #         minimum = self.val_min
-    #         maximum = self.val_max
+    def find_blob(self, frame, mask):
+        """Use blob detector to find laser point"""
+        # Create the detector with the parameters
+        detector = cv2.SimpleBlobDetector.create()
+        params = detector.getParams()
 
-    #     (t, tmp) = cv2.threshold(
-    #         self.channels[channel],  # src
-    #         maximum,  # threshold value
-    #         0,  # we dont care because of the selected type
-    #         cv2.THRESH_TOZERO_INV  # t type
-    #     )
+        # Filter by color (white)
+        params.filterByColor = False
+        # params.blobColor = 255
 
-    #     (t, self.channels[channel]) = cv2.threshold(
-    #         tmp,  # src
-    #         minimum,  # threshold value
-    #         255,  # maxvalue
-    #         cv2.THRESH_BINARY  # type
-    #     )
+        # Set Circularity filtering parameters 
+        params.filterByCircularity = True 
+        params.minCircularity = 0.5
+        
+        # Set Convexity filtering parameters 
+        params.filterByConvexity = True
+        params.minConvexity = 0.2
 
-    #     if channel == 'hue':
-    #         # only works for filtering red color because the range for the hue
-    #         # is split
-    #         self.channels['hue'] = cv2.bitwise_not(self.channels['hue'])
+        # Set inertia filtering parameters 
+        params.filterByInertia = True
+        params.minInertiaRatio = 0.01
+
+        # Filter by Area
+        params.filterByArea = False
+        # params.maxArea = 35
+
+        detector.setParams(params)
+        
+        # Detect blobs 
+        keypoints = detector.detect(mask)
+        
+        if len(keypoints):
+            # print(keypoints)
+            print(len(keypoints))
+            x, y = keypoints[0].pt  
+            center = int(x), int(y)
+            print(center)
+            if self.previous_position:
+                cv2.line(self.trail, self.previous_position, center,
+                                (255, 255, 255), 2)
+
+            cv2.add(self.trail, frame, frame)
+            self.previous_position = center
+            self.centers.append([center[0], center[1]])
 
     def detect(self, frame):
         # gray_img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         # hsv_img = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         hls_img = cv2.cvtColor(frame, cv2.COLOR_BGR2HLS)
 
-        # print("HSV shape: ", hsv_img.shape)
-        # Threshold light areas
         # gray_mask = cv2.adaptiveThreshold(gray_img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C
         #                                      , cv2.THRESH_BINARY, 5, 2)
         # gray_mask = cv2.threshold(gray_img, 200, 255, cv2.THRESH_BINARY)
+        # blurred = cv2.GaussianBlur(gray_img, (11, 11), 0)
+        # _, thres = cv2.threshold(blurred, 50, 255, cv2.THRESH_BINARY)
         
         # Threshold ranges of HSV components
         # hsv_thres = cv2.inRange(hsv_img, (self.hue_min, self.sat_min, self.val_min), 
@@ -164,7 +180,8 @@ class LaserTracker():
             hls_thres = cv2.bitwise_or(hls_thres, tmp)
         
         # thres = cv2.bitwise_and(gray_mask, hsv_thres)
-        self.track(frame, hls_thres)
+        # self.track(frame, hls_thres)
+        self.find_blob(frame, hls_thres)
         # if self.previous_position:
             # print(hls_img[self.previous_position[1], self.previous_position[0]])
 
@@ -181,7 +198,7 @@ class LaserTracker():
         # if right > 480 and left < 160:
         #     return True
         # return False
-        if (len(self.centers) < 2):
+        if (len(self.centers) < 5):
             return False
         # print(self.centers)
         # print(self.centers[-1])
@@ -234,7 +251,7 @@ class Runner():
         self.depth_scale = None
         # self.depth_intrin = None
 
-        self.state = States.SELECTED #States.IDLE
+        self.state = States.IDLE #States.IDLE
         self.target_pos = None
 
     def run_camera(self):
@@ -245,7 +262,7 @@ class Runner():
         self.device = pipeline_profile.get_device()
         self.config.enable_stream(rs.stream.depth, self.cam_width, self.cam_height, rs.format.z16, 30)
         self.config.enable_stream(rs.stream.color, self.cam_width, self.cam_height, rs.format.bgr8, 30)
-        # print(1)
+
         profile = self.pipeline.start(self.config)
         depth_sensor = profile.get_device().first_depth_sensor()
         self.depth_scale = depth_sensor.get_depth_scale()
@@ -303,9 +320,7 @@ class Runner():
                 continue
 
             depth_image = np.asanyarray(depth_frame.get_data())
-            # print("Depth image shape: ", depth_image.shape)
             color_image = np.asanyarray(color_frame.get_data())
-            # print("Color image shape: ", color_image.shape)
             depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
             images = np.hstack((color_image, depth_colormap))
 
@@ -324,10 +339,12 @@ class Runner():
             if self.display:
                 # self.red_tracker.display(red_bin, images)
                 self.green_tracker.display(green_bin, images)
-            self.handle_quit()
 
             if (green_pos):
                 self.state = States.IDLE
+                self.target_pos = green_pos
+
+            self.handle_quit()
 
     def start(self):
         if self.display:
@@ -350,6 +367,7 @@ class Runner():
                 pass
             self.red_tracker.clear_trail()
             self.green_tracker.clear_trail()
+            time.sleep(1.5)
 
 if __name__ == '__main__':
     """run with python3 runner.py -d to show video"""
