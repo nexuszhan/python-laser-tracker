@@ -1,71 +1,33 @@
-#! /usr/bin/env python
 import sys
 import argparse
 import cv2
 import numpy as np
 import pyrealsense2 as rs
+import time
 
-from enum import Enum
-
-class States(Enum):
-    IDLE = 1
-    SELECTED = 2
-    NAVIGATING = 3
-    ARRIVE = 4
-
-class LaserTracker(object):
-
-    def __init__(self, cam_width=640, cam_height=480, hue_min=20, hue_max=160,
-                 sat_min=100, sat_max=255, val_min=200, val_max=256,
-                 display_thresholds=False):
-        """
-        * ``cam_width`` x ``cam_height`` -- This should be the size of the
-        image coming from the camera. Default is 640x480.
-
-        HSV color space Threshold values for a RED laser pointer are determined
-        by:
-
-        * ``hue_min``, ``hue_max`` -- Min/Max allowed Hue values
-        * ``sat_min``, ``sat_max`` -- Min/Max allowed Saturation values
-        * ``val_min``, ``val_max`` -- Min/Max allowed pixel values
-
-        If the dot from the laser pointer doesn't fall within these values, it
-        will be ignored.
-
-        * ``display_thresholds`` -- if True, additional windows will display
-          values for threshold image channels.
-
-        """
-
+class LaserTracker():
+    def __init__(self, hsv_thres, color, cam_width, cam_height, xpos=0, ypos=0):
         self.cam_width = cam_width
         self.cam_height = cam_height
-        self.hue_min = hue_min
-        self.hue_max = hue_max
-        self.sat_min = sat_min
-        self.sat_max = sat_max
-        self.val_min = val_min
-        self.val_max = val_max
-        self.display_thresholds = display_thresholds
+        self.xpos = xpos
+        self.ypos = ypos
 
-        self.capture = None  # camera capture device
-        self.pipeline = None
-        self.config = None
-        self.pipeline_wrapper = None
-        self.pipeline_profile = None
-        self.depth_scale = None
-        
-        self.channels = {
-            'hue': None,
-            'saturation': None,
-            'value': None,
-            'laser': None,
-        }
+        self.tracker_height = 0.125
+        self.horizontal_range = 69 * np.pi / 180
+
+        self.hue_min = hsv_thres["hue_min"]
+        self.hue_max = hsv_thres["hue_max"]
+        self.sat_min = hsv_thres["sat_min"]
+        self.sat_max = hsv_thres["sat_max"]
+        self.val_min = hsv_thres["val_min"]
+        self.val_max = hsv_thres["val_max"]
+        self.color = color
 
         self.previous_position = None
         self.trail = np.zeros((self.cam_height, self.cam_width, 3),
                                  np.uint8)
-        self.centers = []
-
+        self.centers = [] # center[0]: width  center[1]: height
+    
     def create_and_position_window(self, name, xpos, ypos):
         """Creates a named widow placing it on the screen at (xpos, ypos)."""
         # Create a window
@@ -75,89 +37,25 @@ class LaserTracker(object):
         # Move to (xpos,ypos) on the screen
         cv2.moveWindow(name, xpos, ypos)
 
-    def setup_camera_capture(self, device_num=0):
-        """Perform camera setup for the device number (default device = 0).
-        Returns a reference to the camera Capture object.
-
+    def display(self, thres, frame):
+        """Display the combined image and (optionally) all other image channels
+        NOTE: default color space in OpenCV is BGR.
         """
-        # try:
-        #     device = int(device_num)
-        #     sys.stdout.write("Using Camera Device: {0}\n".format(device))
-        # except (IndexError, ValueError):
-        #     # assume we want the 1st device
-        #     device = 0
-        #     sys.stderr.write("Invalid Device. Using default device 0\n")
+        cv2.imshow("RGB_VideoFrame "+self.color, frame)
+        cv2.imshow("LaserPointer "+self.color, thres)
 
-        # Try to start capturing frames
-        # self.capture = cv2.VideoCapture(device)
-        self.pipeline = rs.pipeline()
-        self.config = rs.config()
-        self.pipeline_wrapper = rs.pipeline_wrapper(self.pipeline)
-        self.pipeline_profile = self.config.resolve(self.pipeline_wrapper)
-        self.capture = self.pipeline_profile.get_device()
-        self.config.enable_stream(rs.stream.depth, self.cam_width, self.cam_height, rs.format.z16, 30)
-        self.config.enable_stream(rs.stream.color, self.cam_width, self.cam_height, rs.format.bgr8, 30)
+    def setup_windows(self):
+        sys.stdout.write("Using OpenCV version: {0}\n".format(cv2.__version__))
 
-        # if not self.capture.isOpened():
-        #     sys.stderr.write("Faled to Open Capture device. Quitting.\n")
-        #     sys.exit(1)
+        # create output windows
+        self.create_and_position_window("LaserPointer "+self.color, self.xpos, self.ypos)
+        self.create_and_position_window("RGB_VideoFrame "+self.color,
+                                        self.xpos + 10 + self.cam_width, self.ypos)
 
-        # set the wanted image size from the camera
-        # self.capture.set(
-        #     cv2.cv.CV_CAP_PROP_FRAME_WIDTH if cv2.__version__.startswith('2') else cv2.CAP_PROP_FRAME_WIDTH,
-        #     self.cam_width
-        # )
-        # self.capture.set(
-        #     cv2.cv.CV_CAP_PROP_FRAME_HEIGHT if cv2.__version__.startswith('2') else cv2.CAP_PROP_FRAME_HEIGHT,
-        #     self.cam_height
-        # )
-        return self.capture
-    
     def clear_trail(self):
         self.trail = np.zeros((self.cam_height, self.cam_width, 3), np.uint8)
-        self.centers.clear()
-
-    def handle_quit(self, delay=10):
-        """Quit the program if the user presses "Esc" or "q"."""
-        key = cv2.waitKey(delay)
-        c = chr(key & 255)
-        if c in ['c', 'C']:
-            self.trail = np.zeros((self.cam_height, self.cam_width, 3),
-                                     np.uint8)
-        if c in ['q', 'Q', chr(27)]:
-            cv2.destroyAllWindows()
-            self.pipeline.stop()
-            sys.exit(0)
-
-    def threshold_image(self, channel):
-        if channel == "hue":
-            minimum = self.hue_min
-            maximum = self.hue_max
-        elif channel == "saturation":
-            minimum = self.sat_min
-            maximum = self.sat_max
-        elif channel == "value":
-            minimum = self.val_min
-            maximum = self.val_max
-
-        (t, tmp) = cv2.threshold(
-            self.channels[channel],  # src
-            maximum,  # threshold value
-            0,  # we dont care because of the selected type
-            cv2.THRESH_TOZERO_INV  # t type
-        )
-
-        (t, self.channels[channel]) = cv2.threshold(
-            tmp,  # src
-            minimum,  # threshold value
-            255,  # maxvalue
-            cv2.THRESH_BINARY  # type
-        )
-
-        if channel == 'hue':
-            # only works for filtering red color because the range for the hue
-            # is split
-            self.channels['hue'] = cv2.bitwise_not(self.channels['hue'])
+        self.centers = []
+        self.previous_position = None
 
     def track(self, frame, mask):
         """
@@ -177,6 +75,7 @@ class LaserTracker(object):
             # it to compute the minimum enclosing circle and
             # centroid
             c = max(countours, key=cv2.contourArea)
+            # c = min(countours, key=cv2.contourArea)
             ((x, y), radius) = cv2.minEnclosingCircle(c)
             moments = cv2.moments(c)
             if moments["m00"] > 0:
@@ -186,6 +85,7 @@ class LaserTracker(object):
                 center = int(x), int(y)
 
             # only proceed if the radius meets a minimum size
+            # if radius > 10:
             if radius > 10:
                 # draw the circle and centroid on the frame,
                 cv2.circle(frame, (int(x), int(y)), int(radius),
@@ -198,244 +98,118 @@ class LaserTracker(object):
 
         cv2.add(self.trail, frame, frame)
         self.previous_position = center
-        self.centers.append(center)
+        if center:
+            self.centers.append([center[0], center[1]])
+
+    def find_blob(self, frame, mask):
+        """Use blob detector to find laser point"""
+        # Create the detector with the parameters
+        detector = cv2.SimpleBlobDetector.create()
+        params = detector.getParams()
+
+        # Filter by color (white)
+        params.filterByColor = False
+        # params.blobColor = 255
+
+        # Set Circularity filtering parameters 
+        params.filterByCircularity = True 
+        params.minCircularity = 0.5
+        
+        # Set Convexity filtering parameters 
+        params.filterByConvexity = True
+        params.minConvexity = 0.35
+
+        # Set inertia filtering parameters 
+        params.filterByInertia = True
+        params.minInertiaRatio = 0.5
+
+        # Filter by Area
+        params.filterByArea = False
+        params.maxArea = 200
+
+        detector.setParams(params)
+        
+        # Detect blobs 
+        keypoints = detector.detect(mask)
+        
+        print(len(keypoints))
+        if len(keypoints) and len(keypoints) <= 2:
+            # print(keypoints)
+            print(len(keypoints))
+            x, y = keypoints[0].pt  
+            center = int(x), int(y)
+            print(center)
+            if self.previous_position:
+                cv2.line(self.trail, self.previous_position, center,
+                                (255, 255, 255), 2)
+
+            cv2.add(self.trail, frame, frame)
+            self.previous_position = center
+            self.centers.append([center[0], center[1]])
 
     def detect(self, frame):
-        hsv_img = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        # gray_img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # hsv_img = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        hls_img = cv2.cvtColor(frame, cv2.COLOR_BGR2HLS)
 
-        # split the video frame into color channels
-        h, s, v = cv2.split(hsv_img)
-        self.channels['hue'] = h
-        self.channels['saturation'] = s
-        self.channels['value'] = v
+        # gray_mask = cv2.adaptiveThreshold(gray_img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C
+        #                                      , cv2.THRESH_BINARY, 5, 2)
+        # gray_mask = cv2.threshold(gray_img, 200, 255, cv2.THRESH_BINARY)
+        # blurred = cv2.GaussianBlur(gray_img, (11, 11), 0)
+        # _, thres = cv2.threshold(blurred, 50, 255, cv2.THRESH_BINARY)
+        
+        # Threshold ranges of HSV components
+        # hsv_thres = cv2.inRange(hsv_img, (self.hue_min, self.sat_min, self.val_min), 
+        #                             (self.hue_max, self.sat_max, self.val_max))
+        # if self.color == "red":
+        #     tmp = cv2.inRange(hsv_img, (170, self.sat_min, self.val_min),
+        #                       (180, self.sat_max, self.val_max))
+        #     hsv_thres = cv2.bitwise_or(hsv_thres, tmp)
+        hls_thres = cv2.inRange(hls_img, (0, 250, 0), 
+                                    (255, 255, 255))
+        if self.color == "red":
+            tmp = cv2.inRange(hls_img, (170, 200, self.sat_min),
+                              (180, 255, self.sat_max))
+            hls_thres = cv2.bitwise_or(hls_thres, tmp)
+        
+        # thres = cv2.bitwise_and(gray_mask, hsv_thres)
+        # self.track(frame, hls_thres)
+        self.find_blob(frame, hls_thres)
+        # if self.previous_position:
+            # print(hls_img[self.previous_position[1], self.previous_position[0]])
 
-        # Threshold ranges of HSV components; storing the results in place
-        self.threshold_image("hue")
-        self.threshold_image("saturation")
-        self.threshold_image("value")
-
-        # Perform an AND on HSV components to identify the laser!
-        self.channels['laser'] = cv2.bitwise_and(
-            self.channels['hue'],
-            self.channels['value']
-        )
-        self.channels['laser'] = cv2.bitwise_and(
-            self.channels['saturation'],
-            self.channels['laser']
-        )
-
-        # Merge the HSV components back together.
-        hsv_image = cv2.merge([
-            self.channels['hue'],
-            self.channels['saturation'],
-            self.channels['value'],
-        ])
-
-        self.track(frame, self.channels['laser'])
-
-        return hsv_image
-
-    def display(self, img, frame):
-        """Display the combined image and (optionally) all other image channels
-        NOTE: default color space in OpenCV is BGR.
-        """
-        cv2.imshow('RGB_VideoFrame', frame)
-        cv2.imshow('LaserPointer', self.channels['laser'])
-        if self.display_thresholds:
-            cv2.imshow('Thresholded_HSV_Image', img)
-            cv2.imshow('Hue', self.channels['hue'])
-            cv2.imshow('Saturation', self.channels['saturation'])
-            cv2.imshow('Value', self.channels['value'])
-
-    def setup_windows(self):
-        sys.stdout.write("Using OpenCV version: {0}\n".format(cv2.__version__))
-
-        # create output windows
-        self.create_and_position_window('LaserPointer', 0, 0)
-        self.create_and_position_window('RGB_VideoFrame',
-                                        10 + self.cam_width, 0)
-        if self.display_thresholds:
-            self.create_and_position_window('Thresholded_HSV_Image', 10, 10)
-            self.create_and_position_window('Hue', 20, 20)
-            self.create_and_position_window('Saturation', 30, 30)
-            self.create_and_position_window('Value', 40, 40)
-
-    def get_distance(frames):
-        """compute distance to a laser point"""
-        align = rs.align(rs.stream.color)
-        frames = align.process(frames)
-
-        aligned_depth_frame = frames.get_depth_frame()
-
-        depth = np.asanyarray(aligned_depth_frame.get_data())
-        # depth = depth[xmin_depth:xmax_depth,ymin_depth:ymax_depth].astype(float)
-        # depth = depth * depth_scale
-        # dist,_,_,_ = cv2.mean(depth)
+        # return hsv_thres
+        return hls_thres
     
-    def setup(self):
-        # Set up window positions
-        self.setup_windows()
-        # Set up the camera capture
-        self.setup_camera_capture()
+    def check_activate(self):
+        """Check whether there is a clockwise circle"""
+        # if (len(self.centers) < 10):
+        #     return False
+        # centers = np.array(self.centers)
+        # left = np.mean(centers[:int(len(centers)/5), 0])
+        # right = np.mean(centers[int(0.8*len(centers)):, 0])
+        # if right > 480 and left < 160:
+        #     return True
+        # return False
+        if (len(self.centers) < 6):
+            return False
 
-        profile = self.pipeline.start(self.config)
-        depth_sensor = profile.get_device().first_depth_sensor()
-        self.depth_scale = depth_sensor.get_depth_scale()
+        left = self.centers[0][0]
+        right = self.centers[-1][0]
+        if right > 500 and left < 140:
+            return True
+        return False
 
-    def run(self):
-        # Set up window positions
-        self.setup_windows()
-        # Set up the camera capture
-        self.setup_camera_capture()
+    def get_target_pos(self, depth_frame, depth_scale, depth_intrin):
+        """Identify the target position when selected"""
+        if len(self.centers) == 0:
+            return None
+        depth = depth_frame[self.centers[0][1], self.centers[0][0]].astype(float)
+        dist = depth * depth_scale
+        print(dist)
 
-        profile = self.pipeline.start(self.config)
-        depth_sensor = profile.get_device().first_depth_sensor()
-        self.depth_scale = depth_sensor.get_depth_scale()
+        camera_cord = rs.rs2_deproject_pixel_to_point(depth_intrin, [self.centers[0][0], self.centers[0][1]], dist)
+        target_x = camera_cord[2]
+        target_y = -camera_cord[0] # define left as positive
 
-        align = rs.align(rs.stream.color)
-
-        while True:
-            # 1. capture the current image
-            # success, frame = self.capture.read()
-            frames = self.pipeline.wait_for_frames()
-            
-            # aligned_frames = align.process(frames)
-            depth_frame = frames.get_depth_frame()
-            # aligned_depth_frame = aligned_frames.get_depth_frame()
-            color_frame = frames.get_color_frame()
-            # if not success:  # no image captured... end the processing
-            #     sys.stderr.write("Could not read camera frame. Quitting\n")
-            #     sys.exit(1)
-            if not depth_frame or not color_frame:
-                continue
-            
-            # colorizer = rs.colorizer()
-            depth_image = np.asanyarray(depth_frame.get_data())
-            color_image = np.asanyarray(color_frame.get_data())
-            depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
-            images = np.hstack((color_image, depth_colormap))
-
-            # hsv_image = self.detect(frame)
-            # self.display(hsv_image, frame)
-            hsv_image = self.detect(color_image)
-            # images = np.hstack((color_image, depth_image))
-            # self.display(hsv_image, color_image)
-            self.display(hsv_image, images)
-            self.handle_quit()
-
-class Runner():
-    def __init__(self, params):
-        self.tracker = LaserTracker(
-            cam_width=params.width,
-            cam_height=params.height,
-            hue_min=params.huemin,
-            hue_max=params.huemax,
-            sat_min=params.satmin,
-            sat_max=params.satmax,
-            val_min=params.valmin,
-            val_max=params.valmax,
-            display_thresholds=params.display
-        )
-        self.state = States.IDLE
-        self.target_pos = None
-
-    def handle_idle(self):
-        while self.state == States.IDLE:
-            frames = self.tracker.pipeline.wait_for_frames()
-            # depth_frame = frames.get_depth_frame()
-            color_frame = frames.get_color_frame()
-            if not color_frame:
-                continue
-
-            # depth_image = np.asanyarray(depth_frame.get_data())
-            color_image = np.asanyarray(color_frame.get_data())
-
-            hsv_image = self.tracker.detect(color_image)
-            self.tracker.display(hsv_image, color_image)
-            # if ... :
-                # self.state = States.SELECTED
-
-            self.tracker.handle_quit()
-
-    def handle_selected(self):
-        while self.state == States.SELECTED:
-            frames = self.tracker.pipeline.wait_for_frames()
-            depth_frame = frames.get_depth_frame()
-            color_frame = frames.get_color_frame()
-
-            if not depth_frame or not color_frame:
-                continue
-
-            depth_image = np.asanyarray(depth_frame.get_data())
-            color_image = np.asanyarray(color_frame.get_data())
-
-            hsv_image = self.tracker.detect(color_image)
-            self.tracker.display(hsv_image, color_image)
-            self.tracker.handle_quit()
-
-    def start(self):
-        self.tracker.setup()
-        while True:
-            self.tracker.clear_trail()
-            if self.state == States.IDLE:
-                self.handle_idle()
-            elif self.state == States.SELECTED:
-                self.handle_selected()
-            elif self.state == States.NAVIGATING:
-                pass
-            elif self.state == States.ARRIVE:
-                pass
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Run the Laser Tracker')
-    parser.add_argument('-W', '--width',
-                        default=640,
-                        type=int,
-                        help='Camera Width')
-    parser.add_argument('-H', '--height',
-                        default=480,
-                        type=int,
-                        help='Camera Height')
-    parser.add_argument('-u', '--huemin',
-                        default=20,
-                        type=int,
-                        help='Hue Minimum Threshold')
-    parser.add_argument('-U', '--huemax',
-                        default=160,
-                        type=int,
-                        help='Hue Maximum Threshold')
-    parser.add_argument('-s', '--satmin',
-                        default=100,
-                        type=int,
-                        help='Saturation Minimum Threshold')
-    parser.add_argument('-S', '--satmax',
-                        default=255,
-                        type=int,
-                        help='Saturation Maximum Threshold')
-    parser.add_argument('-v', '--valmin',
-                        default=200,
-                        type=int,
-                        help='Value Minimum Threshold')
-    parser.add_argument('-V', '--valmax',
-                        default=255,
-                        type=int,
-                        help='Value Maximum Threshold')
-    parser.add_argument('-d', '--display',
-                        action='store_true',
-                        help='Display Threshold Windows')
-    params = parser.parse_args()
-
-    # runner = Runner(params)
-    # runner.start()
-    tracker = LaserTracker(
-            cam_width=params.width,
-            cam_height=params.height,
-            hue_min=params.huemin,
-            hue_max=params.huemax,
-            sat_min=params.satmin,
-            sat_max=params.satmax,
-            val_min=params.valmin,
-            val_max=params.valmax,
-            display_thresholds=params.display
-        )
-    tracker.run()
+        return [target_x, target_y]
