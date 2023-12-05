@@ -1,10 +1,12 @@
 from laser_tracker import *
-# from publisher import *
-from pid_controller import *
+# from pid_controller import *
+# import rclpy
+# from rclpy.node import Node
+# from geometry_msgs.msg import Twist, Pose, Point
+# from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PoseStamped
+# from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 import rclpy
-from rclpy.node import Node
-from geometry_msgs.msg import Twist, Pose, Point
-from nav_msgs.msg import Odometry
 
 from enum import Enum
 
@@ -43,30 +45,33 @@ class Runner():
 
         self.state = States.IDLE #States.IDLE
         self.task = None
-        
-        self.target_pos = Point()
-        self.current_pos = Point()
-        
-        self.target_pos_node = Node("target pos publisher")
-        
-        self.odom_node = Node("odometry subscriber")
-        
-        self.target_pos_publisher = self.target_pos_node.create_publisher(
-            Odometry,
-            "target_pos",
-            10
-        )
-        self.odom_subscriber = self.odom_node.create_subscription(
-            Odometry, 
-            "odom",
-            self.odom_callback,
-            10)
+        self.offset = [0.0, 0.0]
 
-        # self.pid = PID(1, 0.1, 0.05, setpoint=1)
-        self.pid = MYPID(1.0, 0.1, 0.03)
+        # self.navigator = BasicNavigator()
+        
+        # self.target_pos = Point()
+        # self.current_pos = Point()
+        
+        # self.target_pos_node = Node("target pos publisher")
+        
+        # self.odom_node = Node("odometry subscriber")
+        
+        # self.target_pos_publisher = self.target_pos_node.create_publisher(
+        #     Odometry,
+        #     "target_pos",
+        #     10
+        # )
+        # self.odom_subscriber = self.odom_node.create_subscription(
+        #     Odometry, 
+        #     "odom",
+        #     self.odom_callback,
+        #     10)
 
-    def odom_callback(self, msg:Odometry):
-        self.current_pos = msg.pose.pose.position
+        # # self.pid = PID(1, 0.1, 0.05, setpoint=1)
+        # self.pid = MYPID(1.0, 0.1, 0.03)
+
+    # def odom_callback(self, msg:Odometry):
+    #     self.current_pos = msg.pose.pose.position
 
     def setup_camera(self):
         self.pipeline = rs.pipeline()
@@ -154,25 +159,42 @@ class Runner():
 
             if (green_pos):
                 self.state = States.NAVIGATING
-                self.target_pos.x = green_pos[0]
-                self.target_pos.y = green_pos[1]
+                self.target_pos_x = green_pos[0]
+                self.target_pos_y = green_pos[1]
                 # TODO: set the msg
-                msg = Odometry()
-                msg.header.stamp = self.target_pos_node.get_clock().now().to_msg()
-                msg.pose.pose.position = self.target_pos
-                self.target_pos_publisher.publish(msg)
+                # msg = Odometry()
+                # msg.header.stamp = self.target_pos_node.get_clock().now().to_msg()
+                # msg.pose.pose.position = self.target_pos
+                # self.target_pos_publisher.publish(msg)
 
-    def check_arrive(self):
-        return abs(self.current_pos[0]-self.target_pos[0]) < 0.1 and \
-                abs(self.current_pos[1]-self.target_pos[1]) < 0.1
+    # def check_arrive(self):
+    #     return abs(self.current_pos[0]-self.target_pos[0]) < 0.1 and \
+    #             abs(self.current_pos[1]-self.target_pos[1]) < 0.1
 
     def handle_navigate(self):
         while self.state == States.NAVIGATING:
-            if self.check_arrive():
-                self.state = States.ARRIVE
-                break
-            # TODO: control the bot to move
-            # ......
+            goal_pose = PoseStamped()
+            goal_pose.header.frame_id = 'map'
+            # goal_pose.header.stamp = navigator.get_clock().now().to_msg()
+            goal_pose.pose.position.x = self.target_pos_x
+            goal_pose.pose.position.y = self.target_pos_y
+            goal_pose.pose.orientation.w = 1.0
+            # navigator.goToPose(goal_pose)
+            # while not navigator.isTaskComplete():
+            #     continue
+            
+            # result = navigator.getResult()
+            # if result == TaskResult.SUCCEEDED:
+            #     print('Goal succeeded!')
+            # elif result == TaskResult.CANCELED:
+            #     print('Goal was canceled!')
+            # elif result == TaskResult.FAILED:
+            #     print('Goal failed!')
+            # else:
+            #     print('Goal has an invalid return status!')
+
+            self.state = States.ARRIVE
+            break
 
             # frames = self.pipeline.wait_for_frames()
             # aligned_frames = self.align.process(frames)
@@ -215,19 +237,16 @@ class Runner():
                 break
 
             if self.task == Tasks.SPIN:
-
-                self.task = None
                 pass
             elif self.task == Tasks.DRIVE_SQUARE:
-
-                self.task = None
                 pass
+            self.task = None
+            self.state = States.IDLE
             
     def start(self):
-        # rclpy.init(args=args)
-        rclpy.init()
-        rclpy.spin(self.target_pos_publisher)
-        rclpy.spin(self.odom_subscriber)
+        # rclpy.init()
+        # rclpy.spin(self.target_pos_publisher)
+        # rclpy.spin(self.odom_subscriber)
 
         if self.display:
             print("Display enabled")
@@ -236,7 +255,20 @@ class Runner():
             self.green_tracker.setup_windows()
         self.setup_camera()
         # TODO: initialize current_pos
-        self.current_pos = [0, 0]
+        # self.current_pos = [0, 0]
+
+        # Set nav2 initial pose
+        initial_pose = PoseStamped()
+        initial_pose.header.frame_id = 'map'
+        # initial_pose.header.stamp = navigator.get_clock().now().to_msg()
+        initial_pose.pose.position.x = 0.0
+        initial_pose.pose.position.y = 0.0
+        initial_pose.pose.orientation.z = 0.0
+        initial_pose.pose.orientation.w = 1.0
+        # navigator.setInitialPose(initial_pose)
+
+        # navigator.waitUntilNav2Active()
+
         while True:
             if self.state == States.IDLE:
                 print("idel")
@@ -259,6 +291,7 @@ class Runner():
         scv2.destroyAllWindows()
         self.pipeline.stop()
         rclpy.shutdown()
+        # navigator.lifecycleShutdown()
         sys.exit(0)
 
 if __name__ == '__main__':

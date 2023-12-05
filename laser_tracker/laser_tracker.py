@@ -113,15 +113,15 @@ class LaserTracker():
 
         # Set Circularity filtering parameters 
         params.filterByCircularity = True 
-        params.minCircularity = 0.5
+        params.minCircularity = 0.65
         
         # Set Convexity filtering parameters 
         params.filterByConvexity = True
-        params.minConvexity = 0.35
+        params.minConvexity = 0.2
 
         # Set inertia filtering parameters 
         params.filterByInertia = True
-        params.minInertiaRatio = 0.5
+        params.minInertiaRatio = 0.01
 
         # Filter by Area
         params.filterByArea = False
@@ -133,11 +133,20 @@ class LaserTracker():
         keypoints = detector.detect(mask)
         
         print(len(keypoints))
-        if len(keypoints) and len(keypoints) <= 2:
+        # if len(keypoints) and len(keypoints) <= 2:
             # print(keypoints)
-            print(len(keypoints))
-            x, y = keypoints[0].pt  
-            center = int(x), int(y)
+            # print(len(keypoints))
+        # max_y = 0
+        center_x = 0
+        center_y = 0
+        for keypoint in keypoints:
+            x, y = keypoint.pt  
+            if y > center_y:
+                center_y = y
+                center_x = x
+
+        if center_y > self.cam_height/3:
+            center = int(center_x), int(center_y)
             print(center)
             if self.previous_position:
                 cv2.line(self.trail, self.previous_position, center,
@@ -146,6 +155,10 @@ class LaserTracker():
             cv2.add(self.trail, frame, frame)
             self.previous_position = center
             self.centers.append([center[0], center[1]])
+
+        print(self.centers)
+        # if (len(self.centers) >= 25):
+            # self.clear_trail()
 
     def detect(self, frame):
         # gray_img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -199,6 +212,10 @@ class LaserTracker():
         if right > 500 and left < 140:
             return True
         return False
+    
+    def check_scattered_laser(self):
+        """Check the scattered laser points"""
+        pass
 
     def get_target_pos(self, depth_frame, depth_scale, depth_intrin):
         """Identify the target position when selected"""
